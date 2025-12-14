@@ -1,0 +1,62 @@
+═══════════════════════════════════════════════════════════════
+  CHECKLIST: ARCHIVOS PARA SUBIR AL HOSTING
+═══════════════════════════════════════════════════════════════
+
+✅ CARPETAS A SUBIR (completas):
+───────────────────────────────────────────────────────────────
+  [✓] app/
+  [✓] bootstrap/
+  [✓] config/
+  [✓] database/
+  [✓] public/
+  [✓] resources/
+  [✓] routes/
+  [✓] storage/
+  [✓] tests/
+
+✅ ARCHIVOS A SUBIR (en la raíz):
+───────────────────────────────────────────────────────────────
+  [✓] .htaccess
+  [✓] artisan
+  [✓] composer.json
+  [✓] composer.lock
+  [✓] phpunit.xml
+  [✓] README.md
+  [✓] DEPLOY_CPANEL.md
+  [✓] SWAGGER.md
+  [✓] ARCHIVOS_SUBIR_HOSTING.md
+
+❌ NO SUBIR (se crean en el servidor):
+───────────────────────────────────────────────────────────────
+  [✗] vendor/              → Se instala con: composer install
+  [✗] .env                 → Se crea manualmente en el servidor
+  [✗] .env.example         → Solo es un ejemplo
+  [✗] .git/               → No necesario en producción
+  [✗] node_modules/       → No necesario (si existe)
+
+═══════════════════════════════════════════════════════════════
+  COMANDOS A EJECUTAR EN EL SERVIDOR DESPUÉS DE SUBIR
+═══════════════════════════════════════════════════════════════
+
+1. cd ~/public_html/api
+
+2. composer install --no-dev --optimize-autoloader
+
+3. Crear archivo .env (copiar desde .env.example y editar)
+
+4. php artisan key:generate
+
+5. chmod -R 755 storage bootstrap/cache
+
+6. php artisan storage:link
+
+7. php artisan migrate --force
+
+8. php artisan config:cache
+   php artisan route:cache
+   php artisan view:cache
+
+9. php artisan l5-swagger:generate
+
+═══════════════════════════════════════════════════════════════
+

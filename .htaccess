@@ -1,0 +1,19 @@
+# Proteger archivos sensibles
+<FilesMatch "^\.">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+<FilesMatch "(^composer\.(json|lock)|^package\.json|^\.env)">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Denegar acceso a carpetas sensibles
+RedirectMatch 403 ^/vendor/.*$
+RedirectMatch 403 ^/storage/.*$
+RedirectMatch 403 ^/bootstrap/.*$
+RedirectMatch 403 ^/database/.*$
+RedirectMatch 403 ^/tests/.*$
+RedirectMatch 403 ^/\.git/.*$
+
