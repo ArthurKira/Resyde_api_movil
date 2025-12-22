@@ -24,6 +24,7 @@ class User extends Authenticatable
         'password',
         'perfil',
         'residencia_id',
+        'personal_id',
     ];
 
     /**
@@ -53,6 +54,14 @@ class User extends Authenticatable
     public function residencia(): BelongsTo
     {
         return $this->belongsTo(Residencia::class, 'residencia_id', 'id_residencia');
+    }
+
+    /**
+     * Obtener el personal asociado al usuario
+     */
+    public function personal(): BelongsTo
+    {
+        return $this->belongsTo(Personal::class, 'personal_id', 'id_personal');
     }
 }
 

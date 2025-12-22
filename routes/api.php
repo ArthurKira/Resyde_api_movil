@@ -59,3 +59,20 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 });
 
+// ============================================
+// API REST PARA MÓVIL - SISTEMA DE ASISTENCIA
+// ============================================
+// Nota: Usa el login original /api/auth/login
+
+// Rutas protegidas (requieren token Sanctum)
+Route::middleware('auth:sanctum')->prefix('mobile')->group(function() {
+    // Datos del usuario móvil (con información de personal y horario)
+    Route::get('/user', [App\Http\Controllers\Api\MobileAuthController::class, 'user']);
+    
+    // Asistencia
+    Route::get('/asistencia/estado', [App\Http\Controllers\Api\MobileAsistenciaController::class, 'estado']);
+    Route::post('/asistencia/marcar-entrada', [App\Http\Controllers\Api\MobileAsistenciaController::class, 'marcarEntrada']);
+    Route::post('/asistencia/marcar-salida', [App\Http\Controllers\Api\MobileAsistenciaController::class, 'marcarSalida']);
+    Route::get('/asistencia/historial', [App\Http\Controllers\Api\MobileAsistenciaController::class, 'historial']);
+});
+
