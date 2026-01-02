@@ -38,6 +38,8 @@ class RegistroAsistencia extends Model
         'longitud_entrada',
         'latitud_salida',
         'longitud_salida',
+        'foto_entrada',
+        'foto_salida',
         'estado',
         'observaciones',
         'fecha_creacion',

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use App\Models\RegistroAsistencia;
 use App\Models\PersonalResidencia;
 use App\Models\Personal;
@@ -98,6 +99,59 @@ class MobileAsistenciaController extends Controller
             'error' => null
         ];
     }
+
+    /**
+     * Guardar foto de asistencia con nombre cifrado
+     * 
+     * @param \Illuminate\Http\UploadedFile $foto
+     * @param string $tipo 'entrada' o 'salida'
+     * @param int $idRegistro
+     * @param int $personalId
+     * @param string $fecha Fecha en formato Y-m-d
+     * @return array ['ruta_relativa' => string, 'url_publica' => string]
+     */
+    private function guardarFotoAsistencia($foto, $tipo, $idRegistro, $personalId, $fecha)
+    {
+        // Obtener ruta base desde .env (default: asistencia/fotos)
+        $rutaBase = env('ASISTENCIA_FOTOS_PATH', 'asistencia/fotos');
+        
+        // Extraer año y mes de la fecha
+        $year = date('Y', strtotime($fecha));
+        $month = date('m', strtotime($fecha));
+        
+        // Obtener extensión del archivo
+        $extension = $foto->getClientOriginalExtension();
+        
+        // Generar hash único para el nombre del archivo
+        // Combinar: id_registro + timestamp + random_bytes + personal_id
+        $hash = substr(
+            hash('sha256', $idRegistro . time() . random_bytes(16) . $personalId),
+            0,
+            16
+        );
+        
+        // Nombre del archivo: {tipo}_{hash}.{extension}
+        $nombreArchivo = $tipo . '_' . $hash . '.' . $extension;
+        
+        // Ruta completa: {ruta_base}/{año}/{mes}/{nombre_archivo}
+        $rutaCompleta = $rutaBase . '/' . $year . '/' . $month . '/' . $nombreArchivo;
+        
+        // Guardar en el storage del ERP
+        $rutaGuardada = $foto->storeAs(
+            $rutaBase . '/' . $year . '/' . $month,
+            $nombreArchivo,
+            'erp_storage'
+        );
+        
+        // Obtener URL pública
+        $urlPublica = Storage::disk('erp_storage')->url($rutaGuardada);
+        
+        return [
+            'ruta_relativa' => $rutaGuardada,
+            'url_publica' => $urlPublica
+        ];
+    }
+
     /**
      * Obtener estado de asistencia del día actual
      * 
@@ -198,10 +252,14 @@ class MobileAsistenciaController extends Controller
                     'hora_entrada' => $registro->hora_entrada ? Carbon::parse($registro->hora_entrada)->format('H:i') : null,
                     'latitud_entrada' => $registro->latitud_entrada,
                     'longitud_entrada' => $registro->longitud_entrada,
+                    'foto_entrada' => $registro->foto_entrada,
+                    'foto_entrada_url' => $registro->foto_entrada ? Storage::disk('erp_storage')->url($registro->foto_entrada) : null,
                     'fecha_salida' => $registro->fecha_salida ? Carbon::parse($registro->fecha_salida)->format('Y-m-d') : null,
                     'hora_salida' => $registro->hora_salida ? Carbon::parse($registro->hora_salida)->format('H:i') : null,
                     'latitud_salida' => $registro->latitud_salida,
                     'longitud_salida' => $registro->longitud_salida,
+                    'foto_salida' => $registro->foto_salida,
+                    'foto_salida_url' => $registro->foto_salida ? Storage::disk('erp_storage')->url($registro->foto_salida) : null,
                     'estado' => $registro->estado
                 ];
             }
@@ -235,6 +293,7 @@ class MobileAsistenciaController extends Controller
      * - dni_ce: DNI del empleado
      * - latitud: Latitud de la ubicación (requerido)
      * - longitud: Longitud de la ubicación (requerido)
+     * - foto: Imagen de la entrada (requerido, multipart/form-data)
      * 
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -242,10 +301,11 @@ class MobileAsistenciaController extends Controller
     public function marcarEntrada(Request $request)
     {
         try {
-            // Validar coordenadas primero
+            // Validar coordenadas y foto
             $request->validate([
                 'latitud' => ['required', 'numeric', 'between:-90,90'],
                 'longitud' => ['required', 'numeric', 'between:-180,180'],
+                'foto' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
                 'dni_ce' => ['sometimes', 'string', 'max:20'],
             ]);
 
@@ -351,6 +411,14 @@ class MobileAsistenciaController extends Controller
                 $fechaHoy . ' ' . $horaActual
             );
 
+            // Obtener ID temporal para generar el hash (usaremos 0 si no existe registro aún)
+            $idRegistroTemporal = $existente ? $existente->id_registro : 0;
+            $personalId = $personalObjetivo ? $personalObjetivo->id_personal : $user->personal_id;
+
+            // Guardar foto de entrada
+            $foto = $request->file('foto');
+            $fotoData = $this->guardarFotoAsistencia($foto, 'entrada', $idRegistroTemporal, $personalId, $fechaHoy);
+
             DB::beginTransaction();
 
             try {
@@ -375,6 +443,7 @@ class MobileAsistenciaController extends Controller
                     if ($registroActualizado) {
                         $registroActualizado->latitud_entrada = $latitudEntrada;
                         $registroActualizado->longitud_entrada = $longitudEntrada;
+                        $registroActualizado->foto_entrada = $fotoData['ruta_relativa'];
                         $registroActualizado->estado = $estado;
                         $registroActualizado->save();
                     }
@@ -384,21 +453,49 @@ class MobileAsistenciaController extends Controller
                         $existente->hora_entrada = $horaEntradaReal;
                         $existente->latitud_entrada = $latitudEntrada;
                         $existente->longitud_entrada = $longitudEntrada;
+                        $existente->foto_entrada = $fotoData['ruta_relativa'];
                         $existente->estado = $estado;
                         $existente->observaciones = 'Marcado desde app móvil';
                         $existente->save();
                     } else {
-                        RegistroAsistencia::create([
+                        $nuevoRegistro = RegistroAsistencia::create([
                             'id_personal_residencia' => $personalResidencia->id,
                             'fecha_entrada' => $fechaHoy,
                             'hora_entrada' => $horaEntradaReal,
                             'latitud_entrada' => $latitudEntrada,
                             'longitud_entrada' => $longitudEntrada,
+                            'foto_entrada' => $fotoData['ruta_relativa'],
                             'estado' => $estado,
                             'observaciones' => 'Marcado desde app móvil',
                             'fecha_creacion' => now(),
                             'usuario_creacion' => $user->id
                         ]);
+                        
+                        // Si el hash se generó con id_registro = 0, actualizar con el nombre correcto
+                        if ($idRegistroTemporal == 0 && $nuevoRegistro->id_registro) {
+                            // Regenerar nombre con el ID real
+                            $extension = $foto->getClientOriginalExtension();
+                            $hash = substr(
+                                hash('sha256', $nuevoRegistro->id_registro . time() . random_bytes(16) . $personalId),
+                                0,
+                                16
+                            );
+                            $year = date('Y', strtotime($fechaHoy));
+                            $month = date('m', strtotime($fechaHoy));
+                            $rutaBase = env('ASISTENCIA_FOTOS_PATH', 'asistencia/fotos');
+                            $nuevoNombre = 'entrada_' . $hash . '.' . $extension;
+                            $nuevaRuta = $rutaBase . '/' . $year . '/' . $month . '/' . $nuevoNombre;
+                            
+                            // Renombrar archivo
+                            $rutaVieja = $fotoData['ruta_relativa'];
+                            if (Storage::disk('erp_storage')->exists($rutaVieja)) {
+                                Storage::disk('erp_storage')->move($rutaVieja, $nuevaRuta);
+                                $nuevoRegistro->foto_entrada = $nuevaRuta;
+                                $nuevoRegistro->save();
+                                $fotoData['ruta_relativa'] = $nuevaRuta;
+                                $fotoData['url_publica'] = Storage::disk('erp_storage')->url($nuevaRuta);
+                            }
+                        }
                     }
                 }
 
@@ -418,6 +515,8 @@ class MobileAsistenciaController extends Controller
                         'hora_entrada' => $registro->hora_entrada ? Carbon::parse($registro->hora_entrada)->format('H:i') : null,
                         'latitud_entrada' => $registro->latitud_entrada,
                         'longitud_entrada' => $registro->longitud_entrada,
+                        'foto_entrada' => $registro->foto_entrada,
+                        'foto_entrada_url' => $registro->foto_entrada ? Storage::disk('erp_storage')->url($registro->foto_entrada) : null,
                         'estado' => $registro->estado
                     ]
                 ], 201);
@@ -442,6 +541,7 @@ class MobileAsistenciaController extends Controller
      * - dni_ce: DNI del empleado
      * - latitud: Latitud de la ubicación (requerido)
      * - longitud: Longitud de la ubicación (requerido)
+     * - foto: Imagen de la salida (requerido, multipart/form-data)
      * 
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -449,10 +549,11 @@ class MobileAsistenciaController extends Controller
     public function marcarSalida(Request $request)
     {
         try {
-            // Validar coordenadas primero
+            // Validar coordenadas y foto
             $request->validate([
                 'latitud' => ['required', 'numeric', 'between:-90,90'],
                 'longitud' => ['required', 'numeric', 'between:-180,180'],
+                'foto' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
                 'dni_ce' => ['sometimes', 'string', 'max:20'],
             ]);
 
@@ -516,11 +617,17 @@ class MobileAsistenciaController extends Controller
                 ], 400);
             }
 
+            // Guardar foto de salida
+            $foto = $request->file('foto');
+            $personalId = $resultado['personal'] ? $resultado['personal']->id_personal : $user->personal_id;
+            $fotoData = $this->guardarFotoAsistencia($foto, 'salida', $registro->id_registro, $personalId, $fechaHoy);
+
             // Actualizar registro
             $registro->fecha_salida = $fechaHoy;
             $registro->hora_salida = $horaSalida;
             $registro->latitud_salida = $latitudSalida;
             $registro->longitud_salida = $longitudSalida;
+            $registro->foto_salida = $fotoData['ruta_relativa'];
             $registro->save();
 
             return response()->json([
@@ -532,10 +639,14 @@ class MobileAsistenciaController extends Controller
                     'hora_entrada' => $registro->hora_entrada ? Carbon::parse($registro->hora_entrada)->format('H:i') : null,
                     'latitud_entrada' => $registro->latitud_entrada,
                     'longitud_entrada' => $registro->longitud_entrada,
+                    'foto_entrada' => $registro->foto_entrada,
+                    'foto_entrada_url' => $registro->foto_entrada ? Storage::disk('erp_storage')->url($registro->foto_entrada) : null,
                     'fecha_salida' => $registro->fecha_salida ? Carbon::parse($registro->fecha_salida)->format('Y-m-d') : null,
                     'hora_salida' => $registro->hora_salida ? Carbon::parse($registro->hora_salida)->format('H:i') : null,
                     'latitud_salida' => $registro->latitud_salida,
                     'longitud_salida' => $registro->longitud_salida,
+                    'foto_salida' => $registro->foto_salida,
+                    'foto_salida_url' => $registro->foto_salida ? Storage::disk('erp_storage')->url($registro->foto_salida) : null,
                     'estado' => $registro->estado
                 ]
             ], 200);
@@ -607,10 +718,14 @@ class MobileAsistenciaController extends Controller
                     'hora_entrada' => $registro->hora_entrada ? Carbon::parse($registro->hora_entrada)->format('H:i') : null,
                     'latitud_entrada' => $registro->latitud_entrada,
                     'longitud_entrada' => $registro->longitud_entrada,
+                    'foto_entrada' => $registro->foto_entrada,
+                    'foto_entrada_url' => $registro->foto_entrada ? Storage::disk('erp_storage')->url($registro->foto_entrada) : null,
                     'fecha_salida' => $registro->fecha_salida ? Carbon::parse($registro->fecha_salida)->format('Y-m-d') : null,
                     'hora_salida' => $registro->hora_salida ? Carbon::parse($registro->hora_salida)->format('H:i') : null,
                     'latitud_salida' => $registro->latitud_salida,
                     'longitud_salida' => $registro->longitud_salida,
+                    'foto_salida' => $registro->foto_salida,
+                    'foto_salida_url' => $registro->foto_salida ? Storage::disk('erp_storage')->url($registro->foto_salida) : null,
                     'estado' => $registro->estado,
                     'observaciones' => $registro->observaciones
                 ];
