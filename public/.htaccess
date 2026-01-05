@@ -5,17 +5,65 @@
 
     RewriteEngine On
 
+    # ============================================
+    # Manejo de Headers de Autorización
+    # ============================================
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
+    # ============================================
+    # Redirección de Slashes Finales
+    # ============================================
     # Redirect Trailing Slashes If Not A Folder...
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteCond %{REQUEST_URI} (.+)/$
     RewriteRule ^ %1 [L,R=301]
 
+    # ============================================
+    # Enviar Requests al Front Controller
+    # ============================================
     # Send Requests To Front Controller...
     RewriteCond %{REQUEST_FILENAME} !-d
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
+</IfModule>
+
+# ============================================
+# Seguridad Adicional
+# ============================================
+
+# Prevenir listado de directorios
+Options -Indexes
+
+# Proteger archivos sensibles en public
+<FilesMatch "(^\.htaccess|^\.env|^composer\.(json|lock))">
+    Order allow,deny
+    Deny from all
+</FilesMatch>
+
+# Headers de seguridad (si mod_headers está disponible)
+<IfModule mod_headers.c>
+    # Prevenir clickjacking
+    Header set X-Frame-Options "SAMEORIGIN"
+    
+    # Prevenir MIME type sniffing
+    Header set X-Content-Type-Options "nosniff"
+    
+    # Habilitar XSS protection
+    Header set X-XSS-Protection "1; mode=block"
+    
+    # Referrer Policy
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>
+
+# ============================================
+# Configuración PHP para Uploads
+# ============================================
+# Límites para subida de fotos de asistencia (max 5MB)
+<IfModule mod_php.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 10M
+    php_value max_execution_time 300
+    php_value max_input_time 300
 </IfModule>

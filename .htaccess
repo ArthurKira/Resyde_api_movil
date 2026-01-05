@@ -1,19 +1,67 @@
-# Proteger archivos sensibles
+# ============================================
+# Protección de Archivos Sensibles
+# ============================================
+
+# Proteger archivos que empiezan con punto (ocultos)
 <FilesMatch "^\.">
     Order allow,deny
     Deny from all
 </FilesMatch>
 
-<FilesMatch "(^composer\.(json|lock)|^package\.json|^\.env)">
+# Proteger archivos de configuración y dependencias
+<FilesMatch "(^composer\.(json|lock)|^package\.json|^\.env|^\.env\.|^artisan|^phpunit\.xml)">
     Order allow,deny
     Deny from all
 </FilesMatch>
 
+# ============================================
 # Denegar acceso a carpetas sensibles
+# ============================================
 RedirectMatch 403 ^/vendor/.*$
 RedirectMatch 403 ^/storage/.*$
 RedirectMatch 403 ^/bootstrap/.*$
 RedirectMatch 403 ^/database/.*$
 RedirectMatch 403 ^/tests/.*$
 RedirectMatch 403 ^/\.git/.*$
+RedirectMatch 403 ^/app/.*$
+RedirectMatch 403 ^/config/.*$
+RedirectMatch 403 ^/routes/.*$
 
+# ============================================
+# Configuración PHP (si está permitido)
+# ============================================
+# Nota: Estas directivas pueden no funcionar si PHP está en modo CGI
+# En ese caso, configúralas en php.ini o .user.ini
+
+# Límite de tamaño de archivo para uploads (fotos de asistencia: max 5MB)
+<IfModule mod_php.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 10M
+    php_value max_execution_time 300
+    php_value max_input_time 300
+</IfModule>
+
+# ============================================
+# Seguridad Adicional
+# ============================================
+
+# Prevenir listado de directorios
+Options -Indexes
+
+# Deshabilitar ejecución de scripts en subdirectorios
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Bloquear acceso directo a archivos PHP excepto index.php en public
+    RewriteCond %{REQUEST_URI} !^/public/
+    RewriteCond %{REQUEST_FILENAME} \.php$
+    RewriteRule ^(.*)$ - [F,L]
+</IfModule>
+
+# Proteger contra inyección de código
+<IfModule mod_rewrite.c>
+    RewriteCond %{QUERY_STRING} (\<|%3C).*script.*(\>|%3E) [NC,OR]
+    RewriteCond %{QUERY_STRING} GLOBALS(=|\[|\%[0-9A-Z]{0,2}) [OR]
+    RewriteCond %{QUERY_STRING} _REQUEST(=|\[|\%[0-9A-Z]{0,2})
+    RewriteRule ^(.*)$ - [F,L]
+</IfModule>

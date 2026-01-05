@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\ValidationException;
 use App\Models\RegistroAsistencia;
 use App\Models\PersonalResidencia;
 use App\Models\Personal;
@@ -182,15 +183,55 @@ class MobileAsistenciaController extends Controller
             // Fecha de hoy (zona horaria Perú)
             $hoy = Carbon::now()->setTimezone('America/Lima');
             $fechaHoy = $hoy->format('Y-m-d');
+            $diaSemana = $hoy->format('l');
 
-            // Buscar registro de asistencia de hoy
-            $registro = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
+            // Obtener todas las personal_residencia activas del empleado
+            $todasPersonalResidencias = PersonalResidencia::where('id_personal', $personalIdParaConsulta)
+                ->where('activo', true)
+                ->pluck('id')
+                ->toArray();
+
+            // Buscar registro de asistencia de hoy en la personal_residencia seleccionada
+            $registroHoy = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
                 ->where('fecha_entrada', $fechaHoy)
                 ->first();
 
-            // Verificar horario para hoy
-            $diaSemana = $hoy->format('l');
-            $tieneHorario = AsignacionRecurrente::where('id_personal_residencia', $personalResidencia->id)
+            // Buscar registro sin salida (para soportar turnos nocturnos: entrada ayer, salida hoy)
+            $registroSinSalida = RegistroAsistencia::whereIn('id_personal_residencia', $todasPersonalResidencias)
+                ->whereNotNull('hora_entrada')
+                ->whereNull('hora_salida')
+                ->orderBy('fecha_entrada', 'desc')
+                ->orderBy('hora_entrada', 'desc')
+                ->first();
+
+            // Usar el registro de hoy si existe, sino usar el registro sin salida más reciente
+            $registro = $registroHoy ?: $registroSinSalida;
+
+            // Si encontramos un registro sin salida de otro día, actualizar personal_residencia
+            if ($registroSinSalida && (!$registroHoy || $registroSinSalida->id_personal_residencia != $personalResidencia->id)) {
+                $personalResidencia = PersonalResidencia::find($registroSinSalida->id_personal_residencia);
+                $registro = $registroSinSalida;
+            }
+
+            // Buscar horario para el día del registro (si hay registro sin salida)
+            $horarioRegistro = null;
+            if ($registro && $registro->fecha_entrada) {
+                $fechaRegistro = Carbon::parse($registro->fecha_entrada)->format('Y-m-d');
+                $diaSemanaRegistro = Carbon::parse($fechaRegistro)->format('l');
+                
+                $horarioRegistro = AsignacionRecurrente::whereIn('id_personal_residencia', $todasPersonalResidencias)
+                    ->where('activa', true)
+                    ->where('dias_semana', 'like', "%{$diaSemanaRegistro}%")
+                    ->where('fecha_inicio', '<=', $fechaRegistro)
+                    ->where(function($query) use ($fechaRegistro) {
+                        $query->whereNull('fecha_fin')
+                              ->orWhere('fecha_fin', '>=', $fechaRegistro);
+                    })
+                    ->first();
+            }
+
+            // Buscar horario para hoy
+            $horarioHoy = AsignacionRecurrente::whereIn('id_personal_residencia', $todasPersonalResidencias)
                 ->where('activa', true)
                 ->where('dias_semana', 'like', "%{$diaSemana}%")
                 ->where('fecha_inicio', '<=', $fechaHoy)
@@ -198,7 +239,15 @@ class MobileAsistenciaController extends Controller
                     $query->whereNull('fecha_fin')
                           ->orWhere('fecha_fin', '>=', $fechaHoy);
                 })
-                ->exists();
+                ->first();
+
+            // Si se encontró un horario para hoy y no hay registro, usar la personal_residencia del horario
+            if ($horarioHoy && !$registro) {
+                $personalResidencia = PersonalResidencia::find($horarioHoy->id_personal_residencia);
+            }
+
+            // Tiene horario si tiene horario para hoy O para el registro
+            $tieneHorario = ($horarioHoy !== null) || ($horarioRegistro !== null);
 
             // Verificar vacaciones/licencias
             $enVacaciones = false;
@@ -226,7 +275,8 @@ class MobileAsistenciaController extends Controller
 
             $tieneEntrada = $registro && $registro->hora_entrada !== null;
             $tieneSalida = $registro && $registro->hora_salida !== null;
-            $puedeMarcarEntrada = !$tieneEntrada && $tieneHorario && !$enVacaciones && !$enLicencia;
+            $tieneEntradaHoy = $registroHoy && $registroHoy->hora_entrada !== null;
+            $puedeMarcarEntrada = !$tieneEntradaHoy && $tieneHorario && !$enVacaciones && !$enLicencia;
             $puedeMarcarSalida = $tieneEntrada && !$tieneSalida;
 
             $mensaje = '';
@@ -238,8 +288,14 @@ class MobileAsistenciaController extends Controller
                 $mensaje = 'No tiene horario asignado para hoy';
             } elseif ($tieneEntrada && $tieneSalida) {
                 $mensaje = 'Asistencia completa del día';
-            } elseif ($tieneEntrada) {
-                $mensaje = 'Puede marcar su salida';
+            } elseif ($tieneEntrada && !$tieneSalida) {
+                // Si la entrada es de otro día, indicarlo en el mensaje
+                if ($registro && $registro->fecha_entrada != $fechaHoy) {
+                    $fechaEntradaFormato = Carbon::parse($registro->fecha_entrada)->format('d/m/Y');
+                    $mensaje = "Pendiente marcar salida - Entrada: {$fechaEntradaFormato}";
+                } else {
+                    $mensaje = 'Puede marcar su salida';
+                }
             } else {
                 $mensaje = 'Puede marcar su entrada';
             }
@@ -264,6 +320,57 @@ class MobileAsistenciaController extends Controller
                 ];
             }
 
+            // Formatear horario del registro (si hay registro sin salida)
+            $horarioRegistroData = null;
+            if ($horarioRegistro && $registro && $registro->fecha_entrada) {
+                $fechaRegistro = Carbon::parse($registro->fecha_entrada)->format('Y-m-d');
+                $horaEntradaHorario = Carbon::parse($horarioRegistro->hora_entrada)->format('H:i');
+                $horaSalidaHorario = Carbon::parse($horarioRegistro->hora_salida)->format('H:i');
+                
+                $fechaEntradaHorario = $fechaRegistro;
+                $fechaSalidaHorario = $fechaRegistro;
+                
+                if ($horaSalidaHorario < $horaEntradaHorario) {
+                    // Turno nocturno: la salida es al día siguiente
+                    $fechaSalidaHorario = Carbon::parse($fechaRegistro)->addDay()->format('Y-m-d');
+                }
+                
+                $horarioRegistroData = [
+                    'fecha_entrada' => $fechaEntradaHorario,
+                    'hora_entrada' => $horaEntradaHorario,
+                    'fecha_salida' => $fechaSalidaHorario,
+                    'hora_salida' => $horaSalidaHorario,
+                    'dias_semana' => explode(',', $horarioRegistro->dias_semana),
+                    'fecha_inicio' => $horarioRegistro->fecha_inicio ? Carbon::parse($horarioRegistro->fecha_inicio)->format('Y-m-d') : null,
+                    'fecha_fin' => $horarioRegistro->fecha_fin ? Carbon::parse($horarioRegistro->fecha_fin)->format('Y-m-d') : null
+                ];
+            }
+
+            // Formatear horario de hoy
+            $horarioHoyData = null;
+            if ($horarioHoy) {
+                $horaEntradaHorario = Carbon::parse($horarioHoy->hora_entrada)->format('H:i');
+                $horaSalidaHorario = Carbon::parse($horarioHoy->hora_salida)->format('H:i');
+                
+                $fechaEntradaHorario = $fechaHoy;
+                $fechaSalidaHorario = $fechaHoy;
+                
+                if ($horaSalidaHorario < $horaEntradaHorario) {
+                    // Turno nocturno: la salida es al día siguiente
+                    $fechaSalidaHorario = Carbon::parse($fechaHoy)->addDay()->format('Y-m-d');
+                }
+                
+                $horarioHoyData = [
+                    'fecha_entrada' => $fechaEntradaHorario,
+                    'hora_entrada' => $horaEntradaHorario,
+                    'fecha_salida' => $fechaSalidaHorario,
+                    'hora_salida' => $horaSalidaHorario,
+                    'dias_semana' => explode(',', $horarioHoy->dias_semana),
+                    'fecha_inicio' => $horarioHoy->fecha_inicio ? Carbon::parse($horarioHoy->fecha_inicio)->format('Y-m-d') : null,
+                    'fecha_fin' => $horarioHoy->fecha_fin ? Carbon::parse($horarioHoy->fecha_fin)->format('Y-m-d') : null
+                ];
+            }
+
             return response()->json([
                 'success' => true,
                 'fecha' => $fechaHoy,
@@ -274,6 +381,8 @@ class MobileAsistenciaController extends Controller
                 'tiene_horario' => $tieneHorario,
                 'en_vacaciones' => $enVacaciones,
                 'en_licencia' => $enLicencia,
+                'horario_registro' => $horarioRegistroData,
+                'horario_hoy' => $horarioHoyData,
                 'registro' => $registroData,
                 'mensaje' => $mensaje
             ], 200);
@@ -302,12 +411,20 @@ class MobileAsistenciaController extends Controller
     {
         try {
             // Validar coordenadas y foto
-            $request->validate([
-                'latitud' => ['required', 'numeric', 'between:-90,90'],
-                'longitud' => ['required', 'numeric', 'between:-180,180'],
-                'foto' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
-                'dni_ce' => ['sometimes', 'string', 'max:20'],
-            ]);
+            try {
+                $request->validate([
+                    'latitud' => ['required', 'numeric', 'between:-90,90'],
+                    'longitud' => ['required', 'numeric', 'between:-180,180'],
+                    'foto' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
+                    'dni_ce' => ['sometimes', 'string', 'max:20'],
+                ]);
+            } catch (\Illuminate\Validation\ValidationException $e) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Error de validación',
+                    'errors' => $e->errors()
+                ], 422);
+            }
 
             // Obtener personal_residencia (propia o de otro si se pasa dni_ce)
             $resultado = $this->obtenerPersonalResidencia($request);
@@ -329,22 +446,16 @@ class MobileAsistenciaController extends Controller
             $ahora = Carbon::now()->setTimezone('America/Lima');
             $fechaHoy = $ahora->format('Y-m-d');
             $horaActual = $ahora->format('H:i:s');
-
-            // Verificar que no tenga entrada marcada hoy
-            $existente = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
-                ->where('fecha_entrada', $fechaHoy)
-                ->first();
-
-            if ($existente && $existente->hora_entrada) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Ya tiene entrada marcada para hoy'
-                ], 400);
-            }
-
-            // Verificar horario para hoy
             $diaSemana = $ahora->format('l');
-            $horario = AsignacionRecurrente::where('id_personal_residencia', $personalResidencia->id)
+
+            // Obtener todas las personal_residencia activas del empleado
+            $todasPersonalResidencias = PersonalResidencia::where('id_personal', $personalIdParaConsulta)
+                ->where('activo', true)
+                ->pluck('id')
+                ->toArray();
+
+            // Buscar horario en TODAS las personal_residencia activas del empleado
+            $horario = AsignacionRecurrente::whereIn('id_personal_residencia', $todasPersonalResidencias)
                 ->where('activa', true)
                 ->where('dias_semana', 'like', "%{$diaSemana}%")
                 ->where('fecha_inicio', '<=', $fechaHoy)
@@ -358,6 +469,23 @@ class MobileAsistenciaController extends Controller
                 return response()->json([
                     'success' => false,
                     'message' => 'No tiene horario asignado para hoy'
+                ], 400);
+            }
+
+            // Si se encontró un horario, usar la personal_residencia donde está el horario
+            if ($horario) {
+                $personalResidencia = PersonalResidencia::find($horario->id_personal_residencia);
+            }
+
+            // Verificar que no tenga entrada marcada hoy en la personal_residencia seleccionada
+            $existente = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
+                ->where('fecha_entrada', $fechaHoy)
+                ->first();
+
+            if ($existente && $existente->hora_entrada) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Ya tiene entrada marcada para hoy'
                 ], 400);
             }
 
@@ -569,6 +697,8 @@ class MobileAsistenciaController extends Controller
             }
 
             $personalResidencia = $resultado['personal_residencia'];
+            $personalObjetivo = $resultado['personal'];
+            $personalIdParaConsulta = $personalObjetivo ? $personalObjetivo->id_personal : $request->user()->personal_id;
             $user = $request->user();
 
             // Fecha y hora actual (zona horaria Perú)
@@ -576,29 +706,30 @@ class MobileAsistenciaController extends Controller
             $fechaHoy = $ahora->format('Y-m-d');
             $horaActual = $ahora->format('H:i:s');
 
-            // Buscar registro de asistencia de hoy
-            $registro = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
-                ->where('fecha_entrada', $fechaHoy)
+            // Obtener todas las personal_residencia activas del empleado
+            $todasPersonalResidencias = PersonalResidencia::where('id_personal', $personalIdParaConsulta)
+                ->where('activo', true)
+                ->pluck('id')
+                ->toArray();
+
+            // Buscar el registro más reciente sin salida (para soportar turnos nocturnos)
+            // Esto permite que la entrada sea de ayer y la salida de hoy
+            $registro = RegistroAsistencia::whereIn('id_personal_residencia', $todasPersonalResidencias)
+                ->whereNotNull('hora_entrada')  // Debe tener entrada marcada
+                ->whereNull('hora_salida')      // No debe tener salida marcada
+                ->orderBy('fecha_entrada', 'desc')
+                ->orderBy('hora_entrada', 'desc')
                 ->first();
+
+            // Si se encontró un registro, usar la personal_residencia donde está el registro
+            if ($registro) {
+                $personalResidencia = PersonalResidencia::find($registro->id_personal_residencia);
+            }
 
             if (!$registro) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'No tiene entrada marcada para hoy'
-                ], 400);
-            }
-
-            if (!$registro->hora_entrada) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'No tiene hora de entrada registrada'
-                ], 400);
-            }
-
-            if ($registro->hora_salida) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Ya tiene salida marcada para hoy'
+                    'message' => 'No tiene entrada marcada sin salida'
                 ], 400);
             }
 
@@ -607,13 +738,25 @@ class MobileAsistenciaController extends Controller
             $longitudSalida = $request->input('longitud');
 
             // Verificar que la hora de salida sea posterior a la entrada
-            $horaEntrada = Carbon::parse($registro->hora_entrada);
+            // Para turnos nocturnos: entrada puede ser ayer, salida hoy
+            $fechaEntrada = Carbon::parse($registro->fecha_entrada)->format('Y-m-d');
+            $horaEntrada = Carbon::createFromFormat('Y-m-d H:i:s', $fechaEntrada . ' ' . Carbon::parse($registro->hora_entrada)->format('H:i:s'));
             $horaSalida = Carbon::createFromFormat('Y-m-d H:i:s', $fechaHoy . ' ' . $horaActual);
 
             if ($horaSalida->lte($horaEntrada)) {
                 return response()->json([
                     'success' => false,
                     'message' => 'La hora de salida debe ser posterior a la hora de entrada'
+                ], 400);
+            }
+
+            // Validación adicional: la salida no debe ser más de 48 horas después de la entrada
+            // (para evitar marcar salidas de registros muy antiguos)
+            $diferenciaHoras = $horaEntrada->diffInHours($horaSalida);
+            if ($diferenciaHoras > 48) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'La salida no puede ser más de 48 horas después de la entrada'
                 ], 400);
             }
 
