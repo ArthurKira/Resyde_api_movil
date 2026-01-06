@@ -191,9 +191,11 @@ class MobileAsistenciaController extends Controller
                 ->pluck('id')
                 ->toArray();
 
-            // Buscar registro de asistencia de hoy en la personal_residencia seleccionada
-            $registroHoy = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
+            // Buscar registro de asistencia de hoy en TODAS las personal_residencia activas
+            $registroHoy = RegistroAsistencia::whereIn('id_personal_residencia', $todasPersonalResidencias)
                 ->where('fecha_entrada', $fechaHoy)
+                ->orderBy('fecha_entrada', 'desc')
+                ->orderBy('hora_entrada', 'desc')
                 ->first();
 
             // Buscar registro sin salida (para soportar turnos nocturnos: entrada ayer, salida hoy)
@@ -207,10 +209,9 @@ class MobileAsistenciaController extends Controller
             // Usar el registro de hoy si existe, sino usar el registro sin salida más reciente
             $registro = $registroHoy ?: $registroSinSalida;
 
-            // Si encontramos un registro sin salida de otro día, actualizar personal_residencia
-            if ($registroSinSalida && (!$registroHoy || $registroSinSalida->id_personal_residencia != $personalResidencia->id)) {
-                $personalResidencia = PersonalResidencia::find($registroSinSalida->id_personal_residencia);
-                $registro = $registroSinSalida;
+            // Si encontramos un registro, actualizar personal_residencia
+            if ($registro) {
+                $personalResidencia = PersonalResidencia::find($registro->id_personal_residencia);
             }
 
             // Buscar horario para el día del registro (si hay registro sin salida)
