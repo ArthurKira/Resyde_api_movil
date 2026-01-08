@@ -324,6 +324,10 @@ class MobileAsistenciaController extends Controller
             // Formatear horario del registro (si hay registro sin salida)
             $horarioRegistroData = null;
             if ($horarioRegistro && $registro && $registro->fecha_entrada) {
+                // Cargar relación personal_residencia con residencia
+                $horarioRegistro->load('personalResidencia.residencia');
+                $personalResidenciaRegistro = $horarioRegistro->personalResidencia;
+                
                 $fechaRegistro = Carbon::parse($registro->fecha_entrada)->format('Y-m-d');
                 $horaEntradaHorario = Carbon::parse($horarioRegistro->hora_entrada)->format('H:i');
                 $horaSalidaHorario = Carbon::parse($horarioRegistro->hora_salida)->format('H:i');
@@ -343,13 +347,25 @@ class MobileAsistenciaController extends Controller
                     'hora_salida' => $horaSalidaHorario,
                     'dias_semana' => explode(',', $horarioRegistro->dias_semana),
                     'fecha_inicio' => $horarioRegistro->fecha_inicio ? Carbon::parse($horarioRegistro->fecha_inicio)->format('Y-m-d') : null,
-                    'fecha_fin' => $horarioRegistro->fecha_fin ? Carbon::parse($horarioRegistro->fecha_fin)->format('Y-m-d') : null
+                    'fecha_fin' => $horarioRegistro->fecha_fin ? Carbon::parse($horarioRegistro->fecha_fin)->format('Y-m-d') : null,
+                    'personal_residencia' => $personalResidenciaRegistro ? [
+                        'id' => $personalResidenciaRegistro->id,
+                        'cargo' => $personalResidenciaRegistro->cargo
+                    ] : null,
+                    'residencia' => $personalResidenciaRegistro && $personalResidenciaRegistro->residencia ? [
+                        'id_residencia' => $personalResidenciaRegistro->residencia->id_residencia,
+                        'nombre' => $personalResidenciaRegistro->residencia->nombre
+                    ] : null
                 ];
             }
 
             // Formatear horario de hoy
             $horarioHoyData = null;
             if ($horarioHoy) {
+                // Cargar relación personal_residencia con residencia
+                $horarioHoy->load('personalResidencia.residencia');
+                $personalResidenciaHoy = $horarioHoy->personalResidencia;
+                
                 $horaEntradaHorario = Carbon::parse($horarioHoy->hora_entrada)->format('H:i');
                 $horaSalidaHorario = Carbon::parse($horarioHoy->hora_salida)->format('H:i');
                 
@@ -368,7 +384,15 @@ class MobileAsistenciaController extends Controller
                     'hora_salida' => $horaSalidaHorario,
                     'dias_semana' => explode(',', $horarioHoy->dias_semana),
                     'fecha_inicio' => $horarioHoy->fecha_inicio ? Carbon::parse($horarioHoy->fecha_inicio)->format('Y-m-d') : null,
-                    'fecha_fin' => $horarioHoy->fecha_fin ? Carbon::parse($horarioHoy->fecha_fin)->format('Y-m-d') : null
+                    'fecha_fin' => $horarioHoy->fecha_fin ? Carbon::parse($horarioHoy->fecha_fin)->format('Y-m-d') : null,
+                    'personal_residencia' => $personalResidenciaHoy ? [
+                        'id' => $personalResidenciaHoy->id,
+                        'cargo' => $personalResidenciaHoy->cargo
+                    ] : null,
+                    'residencia' => $personalResidenciaHoy && $personalResidenciaHoy->residencia ? [
+                        'id_residencia' => $personalResidenciaHoy->residencia->id_residencia,
+                        'nombre' => $personalResidenciaHoy->residencia->nombre
+                    ] : null
                 ];
             }
 
