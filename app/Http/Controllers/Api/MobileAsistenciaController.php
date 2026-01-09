@@ -158,6 +158,7 @@ class MobileAsistenciaController extends Controller
      * 
      * Query params opcionales:
      * - dni_ce: DNI del empleado
+     * - id_personal_residencia: ID de la residencia específica (si trabaja en varias)
      * 
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -191,7 +192,20 @@ class MobileAsistenciaController extends Controller
                 ->pluck('id')
                 ->toArray();
 
-            // Buscar registro de asistencia de hoy en TODAS las personal_residencia activas
+            // Si se especifica una residencia en particular, filtrar solo esa
+            $idPersonalResidenciaEspecifica = $request->input('id_personal_residencia');
+            if ($idPersonalResidenciaEspecifica) {
+                if (in_array($idPersonalResidenciaEspecifica, $todasPersonalResidencias)) {
+                    $todasPersonalResidencias = [$idPersonalResidenciaEspecifica];
+                } else {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'La residencia especificada no está asignada al empleado o no está activa'
+                    ], 403);
+                }
+            }
+
+            // Buscar registro de asistencia de hoy en las personal_residencia seleccionadas
             $registroHoy = RegistroAsistencia::whereIn('id_personal_residencia', $todasPersonalResidencias)
                 ->where('fecha_entrada', $fechaHoy)
                 ->orderBy('fecha_entrada', 'desc')
@@ -425,6 +439,7 @@ class MobileAsistenciaController extends Controller
      * 
      * Body opcional:
      * - dni_ce: DNI del empleado
+     * - id_personal_residencia: ID de la residencia donde marca (requerido si trabaja en varias)
      * - latitud: Latitud de la ubicación (requerido)
      * - longitud: Longitud de la ubicación (requerido)
      * - foto: Imagen de la entrada (requerido, multipart/form-data)
@@ -442,6 +457,7 @@ class MobileAsistenciaController extends Controller
                     'longitud' => ['required', 'numeric', 'between:-180,180'],
                     'foto' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
                     'dni_ce' => ['sometimes', 'string', 'max:20'],
+                    'id_personal_residencia' => ['sometimes', 'integer', 'exists:personal_residencia,id'],
                 ]);
             } catch (\Illuminate\Validation\ValidationException $e) {
                 return response()->json([
@@ -479,7 +495,21 @@ class MobileAsistenciaController extends Controller
                 ->pluck('id')
                 ->toArray();
 
-            // Buscar horario en TODAS las personal_residencia activas del empleado
+            // Si se especifica una residencia en particular, usar solo esa
+            $idPersonalResidenciaEspecifica = $request->input('id_personal_residencia');
+            if ($idPersonalResidenciaEspecifica) {
+                if (in_array($idPersonalResidenciaEspecifica, $todasPersonalResidencias)) {
+                    $todasPersonalResidencias = [$idPersonalResidenciaEspecifica];
+                    $personalResidencia = PersonalResidencia::find($idPersonalResidenciaEspecifica);
+                } else {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'La residencia especificada no está asignada al empleado o no está activa'
+                    ], 403);
+                }
+            }
+
+            // Buscar horario en las personal_residencia seleccionadas
             $horario = AsignacionRecurrente::whereIn('id_personal_residencia', $todasPersonalResidencias)
                 ->where('activa', true)
                 ->where('dias_semana', 'like', "%{$diaSemana}%")
@@ -692,6 +722,7 @@ class MobileAsistenciaController extends Controller
      * 
      * Body opcional:
      * - dni_ce: DNI del empleado
+     * - id_personal_residencia: ID de la residencia donde marca (opcional, se detecta automáticamente)
      * - latitud: Latitud de la ubicación (requerido)
      * - longitud: Longitud de la ubicación (requerido)
      * - foto: Imagen de la salida (requerido, multipart/form-data)
@@ -708,6 +739,7 @@ class MobileAsistenciaController extends Controller
                 'longitud' => ['required', 'numeric', 'between:-180,180'],
                 'foto' => ['required', 'image', 'mimes:jpeg,jpg,png,webp', 'max:5120'],
                 'dni_ce' => ['sometimes', 'string', 'max:20'],
+                'id_personal_residencia' => ['sometimes', 'integer', 'exists:personal_residencia,id'],
             ]);
 
             // Obtener personal_residencia (propia o de otro si se pasa dni_ce)
@@ -736,6 +768,19 @@ class MobileAsistenciaController extends Controller
                 ->where('activo', true)
                 ->pluck('id')
                 ->toArray();
+
+            // Si se especifica una residencia en particular, filtrar solo esa
+            $idPersonalResidenciaEspecifica = $request->input('id_personal_residencia');
+            if ($idPersonalResidenciaEspecifica) {
+                if (in_array($idPersonalResidenciaEspecifica, $todasPersonalResidencias)) {
+                    $todasPersonalResidencias = [$idPersonalResidenciaEspecifica];
+                } else {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'La residencia especificada no está asignada al empleado o no está activa'
+                    ], 403);
+                }
+            }
 
             // Buscar el registro más reciente sin salida (para soportar turnos nocturnos)
             // Esto permite que la entrada sea de ayer y la salida de hoy
@@ -832,6 +877,7 @@ class MobileAsistenciaController extends Controller
      * 
      * Query params opcionales:
      * - dni_ce: DNI del empleado
+     * - id_personal_residencia: ID de residencia específica (si no se pasa, muestra de todas)
      * - limite: Número de días a mostrar (default: 30)
      * - desde: Fecha inicio (formato: Y-m-d)
      * - hasta: Fecha fin (formato: Y-m-d)
@@ -854,13 +900,36 @@ class MobileAsistenciaController extends Controller
             }
 
             $personalResidencia = $resultado['personal_residencia'];
+            $personalObjetivo = $resultado['personal'];
+            $personalIdParaConsulta = $personalObjetivo ? $personalObjetivo->id_personal : $request->user()->personal_id;
 
             // Parámetros opcionales
             $limite = $request->input('limite', 30); // Por defecto últimos 30 días
             $desde = $request->input('desde');
             $hasta = $request->input('hasta');
+            $idPersonalResidenciaEspecifica = $request->input('id_personal_residencia');
 
-            $query = RegistroAsistencia::where('id_personal_residencia', $personalResidencia->id)
+            // Obtener todas las personal_residencia activas
+            $todasPersonalResidencias = PersonalResidencia::where('id_personal', $personalIdParaConsulta)
+                ->where('activo', true)
+                ->pluck('id')
+                ->toArray();
+
+            // Si se especifica una residencia, filtrar solo esa
+            if ($idPersonalResidenciaEspecifica) {
+                if (in_array($idPersonalResidenciaEspecifica, $todasPersonalResidencias)) {
+                    $todasPersonalResidencias = [$idPersonalResidenciaEspecifica];
+                } else {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'La residencia especificada no está asignada al empleado o no está activa'
+                    ], 403);
+                }
+            }
+
+            // Construir consulta para TODAS las residencias activas (o una específica)
+            $query = RegistroAsistencia::with(['personalResidencia.residencia'])
+                ->whereIn('id_personal_residencia', $todasPersonalResidencias)
                 ->orderBy('fecha_entrada', 'desc');
 
             if ($desde) {
@@ -882,6 +951,11 @@ class MobileAsistenciaController extends Controller
             $historial = $registros->map(function($registro) {
                 return [
                     'id_registro' => $registro->id_registro,
+                    'id_personal_residencia' => $registro->id_personal_residencia,
+                    'residencia' => [
+                        'id_residencia' => $registro->personalResidencia->residencia->id_residencia ?? null,
+                        'nombre' => $registro->personalResidencia->residencia->nombre ?? 'Sin residencia'
+                    ],
                     'fecha_entrada' => $registro->fecha_entrada ? Carbon::parse($registro->fecha_entrada)->format('Y-m-d') : null,
                     'hora_entrada' => $registro->hora_entrada ? Carbon::parse($registro->hora_entrada)->format('H:i') : null,
                     'latitud_entrada' => $registro->latitud_entrada,

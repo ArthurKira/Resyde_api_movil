@@ -15,6 +15,7 @@ class MobileAuthController extends Controller
      * Obtener datos del usuario autenticado (específico para móvil con información de personal y horario)
      * 
      * Nota: Usa el login original /api/auth/login para autenticarse
+     * Ahora devuelve TODAS las residencias activas donde trabaja el empleado
      * 
      * @param Request $request
      * @return \Illuminate\Http\JsonResponse
@@ -40,13 +41,13 @@ class MobileAuthController extends Controller
                 ], 404);
             }
 
-            // Obtener personal_residencia activa (si tiene múltiples, tomar la primera)
-            $personalResidencia = PersonalResidencia::with('residencia')
+            // Obtener TODAS las personal_residencia activas
+            $personalResidencias = PersonalResidencia::with('residencia')
                 ->where('id_personal', $user->personal_id)
                 ->where('activo', true)
-                ->first();
+                ->get();
 
-            if (!$personalResidencia) {
+            if ($personalResidencias->isEmpty()) {
                 return response()->json([
                     'success' => false,
                     'message' => 'El empleado no tiene residencias asignadas activas'
@@ -58,27 +59,45 @@ class MobileAuthController extends Controller
             $diaSemana = $hoy->format('l'); // Monday, Tuesday, etc.
             $fechaHoy = $hoy->format('Y-m-d');
 
-            $horarioHoy = AsignacionRecurrente::where('id_personal_residencia', $personalResidencia->id)
-                ->where('activa', true)
-                ->where('dias_semana', 'like', "%{$diaSemana}%")
-                ->where('fecha_inicio', '<=', $fechaHoy)
-                ->where(function($query) use ($fechaHoy) {
-                    $query->whereNull('fecha_fin')
-                          ->orWhere('fecha_fin', '>=', $fechaHoy);
-                })
-                ->first();
+            // Procesar cada residencia con su horario
+            $residencias = $personalResidencias->map(function($personalResidencia) use ($diaSemana, $fechaHoy) {
+                // Buscar horario para hoy en esta residencia específica
+                $horarioHoy = AsignacionRecurrente::where('id_personal_residencia', $personalResidencia->id)
+                    ->where('activa', true)
+                    ->where('dias_semana', 'like', "%{$diaSemana}%")
+                    ->where('fecha_inicio', '<=', $fechaHoy)
+                    ->where(function($query) use ($fechaHoy) {
+                        $query->whereNull('fecha_fin')
+                              ->orWhere('fecha_fin', '>=', $fechaHoy);
+                    })
+                    ->first();
 
-            // Formatear horario si existe
-            $horarioData = null;
-            if ($horarioHoy) {
-                $horarioData = [
-                    'hora_entrada' => Carbon::parse($horarioHoy->hora_entrada)->format('H:i'),
-                    'hora_salida' => Carbon::parse($horarioHoy->hora_salida)->format('H:i'),
-                    'dias_semana' => explode(',', $horarioHoy->dias_semana),
-                    'fecha_inicio' => $horarioHoy->fecha_inicio,
-                    'fecha_fin' => $horarioHoy->fecha_fin
+                // Formatear horario si existe
+                $horarioData = null;
+                if ($horarioHoy) {
+                    $horarioData = [
+                        'hora_entrada' => Carbon::parse($horarioHoy->hora_entrada)->format('H:i'),
+                        'hora_salida' => Carbon::parse($horarioHoy->hora_salida)->format('H:i'),
+                        'dias_semana' => explode(',', $horarioHoy->dias_semana),
+                        'fecha_inicio' => $horarioHoy->fecha_inicio,
+                        'fecha_fin' => $horarioHoy->fecha_fin
+                    ];
+                }
+
+                return [
+                    'id_personal_residencia' => $personalResidencia->id,
+                    'cargo' => $personalResidencia->cargo,
+                    'residencia' => [
+                        'id_residencia' => $personalResidencia->residencia->id_residencia ?? null,
+                        'nombre' => $personalResidencia->residencia->nombre ?? 'Sin residencia'
+                    ],
+                    'tiene_horario_hoy' => $horarioHoy !== null,
+                    'horario_hoy' => $horarioData
                 ];
-            }
+            });
+
+            // Verificar si tiene al menos un horario hoy
+            $tieneAlgunHorarioHoy = $residencias->where('tiene_horario_hoy', true)->isNotEmpty();
 
             return response()->json([
                 'success' => true,
@@ -93,16 +112,9 @@ class MobileAuthController extends Controller
                         'dni_ce' => $personal->dni_ce,
                         'estado' => $personal->estado
                     ],
-                    'personal_residencia' => [
-                        'id' => $personalResidencia->id,
-                        'cargo' => $personalResidencia->cargo,
-                        'residencia' => [
-                            'id_residencia' => $personalResidencia->residencia->id_residencia ?? null,
-                            'nombre' => $personalResidencia->residencia->nombre ?? 'Sin residencia'
-                        ]
-                    ],
-                    'tiene_horario' => $horarioHoy !== null,
-                    'horario_hoy' => $horarioData
+                    'total_residencias' => $residencias->count(),
+                    'tiene_algun_horario_hoy' => $tieneAlgunHorarioHoy,
+                    'residencias' => $residencias
                 ]
             ], 200);
 
